@@ -48,7 +48,7 @@ Cualquiera con el link podría abrirla. Si quieres protegerla, en Vercel ve a **
 
 **Regalos.** Cada hábito con premios tiene su propio camino: cada día marcado suma un día. Los regalos llegan a los 7 días, 15 días, 1 mes, 3 meses, 6 meses y 1 año marcados (y después cada año). Se pueden cambiar en Ajustes, con su nombre y una idea o presupuesto.
 
-**Perder una racha.** Los regalos ganados no se pierden nunca, pero si se corta la racha de un hábito, su camino vuelve al último regalo que alcanzó. Los hábitos abandonados no generan regalos.
+**Perder una racha.** Si se corta la racha de un hábito, su camino vuelve al último regalo que alcanzó, pero los regalos ya ganados se mantienen. Los hábitos abandonados no generan regalos.
 
 **Terminar un hábito.**
 - *Lo logré*: disponible desde los 30 días de racha (ajustable). Si el hábito tiene premios, recibes un último regalo del nivel de tu racha.

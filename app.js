@@ -325,20 +325,23 @@ function checkNewRewards() {
   const fresh = [];
   for (const h of state.habits) {
     for (const r of progress(h).reached) {
-      if (!state.rewards[rewardKey(h.id, r.days)]) fresh.push({ h, ...r });
+      if (!state.rewards[rewardKey(h.id, r.days)]) fresh.push({ habitId: h.id, ...r });
     }
   }
   if (!fresh.length) return;
   rewardsBusy = true;
   mutate((s) => {
     for (const f of fresh) {
-      const key = rewardKey(f.h.id, f.days);
+      // Se busca el hábito en el estado que se va a guardar: si hubo conflicto, el otro teléfono pudo cambiarlo.
+      const x = s.habits.find((y) => y.id === f.habitId);
+      if (!x || !hasRewards(x)) continue;
+      const key = rewardKey(x.id, f.days);
       if (s.rewards[key]) continue;
       s.rewards[key] = {
-        habitId: f.h.id, habitName: f.h.name, person: f.h.owner, days: f.days, name: f.name, idea: f.idea,
+        habitId: x.id, habitName: x.name, person: x.owner, days: f.days, name: f.name, idea: f.idea,
         earnedAt: f.date, deliveredAt: null, note: '',
       };
-      addLog(s, `${s.people[f.h.owner].name} desbloqueó «${f.name}» (${daysLabel(f.days)}) con «${f.h.name}».`);
+      addLog(s, `${s.people[x.owner].name} desbloqueó «${f.name}» (${daysLabel(f.days)}) con «${x.name}».`);
     }
   }).finally(() => { rewardsBusy = false; render(); });
 }
@@ -435,7 +438,7 @@ function pathHTML(h, pr) {
     const st = rec ? (rec.deliveredAt ? 'delivered' : 'reached') : reachedDays.has(m.days) ? 'reached' : i === pr.next ? 'next' : 'future';
     const size = Math.min(46, 20 + i * 5);
     const status = st === 'delivered' ? ', entregado' : st === 'reached' ? ', por entregar' : '';
-    return `<div class="gift s-${st}" style="left:${pos[i].toFixed(2)}%;--s:${size}px" title="${esc(`${m.name} a los ${daysLabel(m.days)}${status}`)}">
+    return `<div class="gift s-${st}" style="left:${pos[i].toFixed(2)}%;--s:${size}px" title="${esc(`${m.name}, a los ${m.days} días marcados${status}`)}">
       <span class="box"></span><span class="lbl">${esc(shortLabel(m.days))}</span></div>`;
   }).join('');
 

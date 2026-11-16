@@ -2,7 +2,7 @@
 
 ## Qué es
 
-«Nuestro pacto»: una página web para que una pareja (Valukis = persona `a`, Tomilin = persona `b`) siga hábitos juntos. Cada racha activa suma «días de progreso» que desbloquean regalos que el otro debe hacer (7 días, 15, 1 mes, 3, 6, 1 año y luego cada año). Si alguien abandona un hábito, paga un castigo (regalo o ruleta). Las reglas de negocio están explicadas en detalle en [README.md](README.md).
+«Nuestro pacto»: una página web para que una pareja (Valukis = persona `a`, Tomilin = persona `b`) siga hábitos juntos. Cada hábito con premios tiene su propio camino: cada día marcado suma 1 y desbloquea regalos que el otro debe hacer (a los 7, 15, 30, 90, 180 y 365 días marcados, y luego cada año). Si alguien abandona un hábito, paga un castigo (regalo o ruleta). Las reglas de negocio están explicadas en detalle en [README.md](README.md).
 
 Toda la interfaz y los textos están en **español de Chile** (`es-CL`), en tono cercano. Mantén ese idioma y tono en la UI, los comentarios y los mensajes de commit.
 
