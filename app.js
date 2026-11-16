@@ -23,7 +23,6 @@ const addDays = (s, n) => { const d = parse(s); d.setDate(d.getDate() + n); retu
 const diffDays = (a, b) => Math.round((parse(b) - parse(a)) / 86400000);
 const weekday = (s) => parse(s).getDay();
 const today = () => ymd(new Date());
-const fmtNum = (n) => (Math.round(n * 10) / 10).toLocaleString('es-CL');
 const fmtDate = (s) => parse(s).toLocaleDateString('es-CL', { day: 'numeric', month: 'short' });
 const other = (p) => (p === 'a' ? 'b' : 'a');
 const plural = (n, one, many) => (n === 1 ? one : many);
@@ -55,8 +54,6 @@ function defaultState() {
         { days: 365, name: 'Regalo grande', idea: 'Una escapada o eso que viene queriendo hace tiempo' },
       ],
       repeatEvery: 365,
-      bonusPerExtraHabit: 0.25,
-      maxMultiplier: 1.75,
       minDaysToComplete: 30,
       punishments: [
         'Cocinarle la cena que elija',
@@ -81,13 +78,20 @@ function migrate(s) {
   const settings = { ...d.settings, ...(s.settings || {}) };
   if (!Array.isArray(settings.milestones) || !settings.milestones.length) settings.milestones = d.settings.milestones;
   if (!Array.isArray(settings.punishments)) settings.punishments = d.settings.punishments;
+  // Ya no hay multiplicador por tener varios hábitos.
+  delete settings.bonusPerExtraHabit;
+  delete settings.maxMultiplier;
+  // Solo se conservan los regalos de un hábito; los antiguos (por persona, "a:7") se recalculan.
+  const rewards = Object.fromEntries(
+    Object.entries(s.rewards && typeof s.rewards === 'object' ? s.rewards : {}).filter(([, r]) => r?.habitId),
+  );
   return {
     ...d,
     ...s,
     people: { a: { ...d.people.a, ...(s.people?.a || {}) }, b: { ...d.people.b, ...(s.people?.b || {}) } },
     settings,
-    habits: Array.isArray(s.habits) ? s.habits : [],
-    rewards: s.rewards && typeof s.rewards === 'object' ? s.rewards : {},
+    habits: Array.isArray(s.habits) ? s.habits.map((h) => ({ ...h, rewards: h.rewards !== false })) : [],
+    rewards,
     debts: Array.isArray(s.debts) ? s.debts : [],
     log: Array.isArray(s.log) ? s.log : [],
   };
@@ -102,7 +106,7 @@ let saving = 0;
 let rewardsBusy = false;
 let lastDay = today();
 
-/* ---------- reglas: hitos y multiplicador ---------- */
+/* ---------- reglas: hitos ---------- */
 function sortedMilestones() {
   return [...state.settings.milestones].sort((x, y) => x.days - y.days);
 }
@@ -118,18 +122,14 @@ function tierIndexForDays(days) {
   for (let i = 0; i < 500 && milestone(i).days <= days; i++) idx = i;
   return idx;
 }
-function mult(n) {
-  if (n <= 0) return 0;
-  const s = state.settings;
-  return Math.min(Number(s.maxMultiplier) || 1, 1 + (Number(s.bonusPerExtraHabit) || 0) * (n - 1));
-}
-const rewardKey = (p, days) => `${p}:${days}`;
+const rewardKey = (habitId, days) => `${habitId}:${days}`;
 
 /* ---------- racha de un hábito ----------
-   Día hecho -> reinicia el contador de fallos.
-   Día libre fijo -> no cuenta como fallo.
-   Día sin hacer -> suma un fallo; si se pasa del margen, la racha se corta.
-   El día de hoy nunca corta la racha: todavía queda tiempo para hacerlo. */
+   Día hecho -> suma 1 a la racha y reinicia el contador de fallos.
+   Día libre fijo -> no suma ni corta, y también reinicia el contador de fallos.
+   Día sin hacer -> no suma; suma un fallo y, si se pasa del margen, la racha se corta.
+   El día de hoy nunca corta la racha: todavía queda tiempo para hacerlo.
+   La racha es la cantidad de días marcados desde que empezó. */
 function timeline(h, t = today()) {
   const end = h.status !== 'active' && h.endedAt ? (h.endedAt < t ? h.endedAt : t) : t;
   const rest = new Set(h.restDays || []);
@@ -137,22 +137,20 @@ function timeline(h, t = today()) {
   const checks = h.checks || {};
   let alive = true;
   let misses = 0;
-  let streakStart = h.start;
   let atRisk = false;
   let lastBreak = null;
-  const contrib = new Set();
-  const breaks = new Set();
+  let streak = 0;
   const dayState = {};
 
   for (let d = h.start; d <= end; d = addDays(d, 1)) {
     if (checks[d]) {
-      if (!alive) { alive = true; streakStart = d; }
+      if (!alive) { alive = true; streak = 0; }
       misses = 0;
-      contrib.add(d);
+      streak++;
       dayState[d] = 'done';
     } else if (rest.has(weekday(d))) {
       dayState[d] = 'rest';
-      if (alive) contrib.add(d);
+      misses = 0;
     } else if (d === end) {
       dayState[d] = 'pending';
       if (alive && misses + 1 > maxMiss) atRisk = true;
@@ -160,12 +158,10 @@ function timeline(h, t = today()) {
       misses++;
       if (misses > maxMiss) {
         alive = false;
-        streakStart = null;
-        breaks.add(d);
+        streak = 0;
         lastBreak = d;
         dayState[d] = 'break';
       } else {
-        contrib.add(d);
         dayState[d] = 'miss';
       }
     } else {
@@ -173,39 +169,33 @@ function timeline(h, t = today()) {
     }
   }
 
-  const streak = alive && streakStart ? Math.max(0, diffDays(streakStart, end) + 1) : 0;
   return {
-    alive, misses, maxMiss, streak, atRisk, lastBreak, contrib, breaks, dayState,
+    alive, misses, maxMiss, streak, atRisk, lastBreak, dayState,
     doneToday: !!checks[t],
     restToday: rest.has(weekday(t)),
     margin: Math.max(0, maxMiss - misses),
   };
 }
 
-/* ---------- progreso de una persona ----------
-   Cada día con hábitos en racha suma "días de progreso":
-   1 hábito = 1 día; cada hábito extra suma un bono (con tope).
-   Si una racha se corta, vuelves al último regalo alcanzado. */
-function progress(p, t = today()) {
-  const habits = state.habits.filter((h) => h.owner === p);
-  const tls = habits.map((h) => timeline(h, t));
+/* ---------- camino de regalos de un hábito ----------
+   Cada día marcado suma 1 día de progreso.
+   Si la racha se corta, el progreso vuelve al último regalo alcanzado.
+   Los hábitos sin premios o abandonados no generan regalos. */
+const hasRewards = (h) => h.rewards !== false && h.status !== 'quit';
+
+function progress(h, t = today()) {
+  const tl = timeline(h, t);
   let points = 0;
   let base = 0;
   let next = 0;
   const reached = [];
-
-  if (habits.length) {
-    let d = habits.map((h) => h.start).sort()[0];
-    for (; d <= t; d = addDays(d, 1)) {
-      let n = 0;
-      let broke = false;
-      for (const tl of tls) {
-        if (tl.contrib.has(d)) n++;
-        if (tl.breaks.has(d)) broke = true;
-      }
-      if (broke) points = base;
-      points += mult(n);
-      while (points >= milestone(next).days - 1e-9) {
+  if (hasRewards(h)) {
+    for (let d = h.start; d <= t; d = addDays(d, 1)) {
+      const st = tl.dayState[d];
+      if (st === 'break') points = base;
+      if (st !== 'done') continue;
+      points++;
+      while (points >= milestone(next).days) {
         const m = milestone(next);
         reached.push({ days: m.days, name: m.name, idea: m.idea, date: d });
         base = m.days;
@@ -213,9 +203,7 @@ function progress(p, t = today()) {
       }
     }
   }
-
-  const activeNow = tls.filter((tl, i) => habits[i].status === 'active' && tl.alive).length;
-  return { points, next, reached, rate: mult(activeNow), activeNow, habits, tls };
+  return { points, next, reached, tl };
 }
 
 /* ---------- guardado y sincronización ---------- */
@@ -335,19 +323,25 @@ function addLog(s, text) {
 function checkNewRewards() {
   if (rewardsBusy || !state?.setupDone) return;
   const fresh = [];
-  for (const p of ['a', 'b']) {
-    for (const r of progress(p).reached) {
-      if (!state.rewards[rewardKey(p, r.days)]) fresh.push({ p, ...r });
+  for (const h of state.habits) {
+    for (const r of progress(h).reached) {
+      if (!state.rewards[rewardKey(h.id, r.days)]) fresh.push({ habitId: h.id, ...r });
     }
   }
   if (!fresh.length) return;
   rewardsBusy = true;
   mutate((s) => {
     for (const f of fresh) {
-      const key = rewardKey(f.p, f.days);
+      // Se busca el hábito en el estado que se va a guardar: si hubo conflicto, el otro teléfono pudo cambiarlo.
+      const x = s.habits.find((y) => y.id === f.habitId);
+      if (!x || !hasRewards(x)) continue;
+      const key = rewardKey(x.id, f.days);
       if (s.rewards[key]) continue;
-      s.rewards[key] = { person: f.p, days: f.days, name: f.name, idea: f.idea, earnedAt: f.date, deliveredAt: null, note: '' };
-      addLog(s, `${s.people[f.p].name} desbloqueó «${f.name}» (${daysLabel(f.days)}).`);
+      s.rewards[key] = {
+        habitId: x.id, habitName: x.name, person: x.owner, days: f.days, name: f.name, idea: f.idea,
+        earnedAt: f.date, deliveredAt: null, note: '',
+      };
+      addLog(s, `${s.people[x.owner].name} desbloqueó «${f.name}» (${daysLabel(f.days)}) con «${x.name}».`);
     }
   }).finally(() => { rewardsBusy = false; render(); });
 }
@@ -370,7 +364,7 @@ function celebrateUnseen() {
     <div class="celebrate p-${p}">
       <div class="big-gift" aria-hidden="true"><span class="base"></span><span class="lid"></span></div>
       <h2>${mine ? `¡Desbloqueaste «${esc(r.name)}»!` : `¡${esc(state.people[p].name)} desbloqueó «${esc(r.name)}»!`}</h2>
-      <p>${esc(daysLabel(r.days))} de progreso. ${mine ? `${esc(giver)} te debe un regalo.` : 'Te toca regalarle algo.'}</p>
+      <p>${r.days} días marcados en «${esc(r.habitName)}». ${mine ? `${esc(giver)} te debe un regalo.` : 'Te toca regalarle algo.'}</p>
       ${r.idea ? `<p class="hint">Idea: ${esc(r.idea)}</p>` : ''}
       ${extra}
       <div class="dlg-actions" style="justify-content:center"><button class="btn primary" data-action="close" autofocus>Genial</button></div>
@@ -406,11 +400,20 @@ function renderMe() {
 
 function renderPaths() {
   const t = today();
-  $('#paths-body').innerHTML = order().map((p) => pathHTML(p, progress(p, t))).join('');
+  let html = '';
+  for (const p of order()) {
+    const mine = p === me;
+    const habits = state.habits.filter((h) => h.owner === p && h.status === 'active' && hasRewards(h));
+    html += `<h3 class="group-title">${mine ? 'Tus caminos' : `Caminos de ${esc(nameOf(p))}`}</h3>`;
+    html += habits.length
+      ? habits.map((h) => pathHTML(h, progress(h, t))).join('')
+      : `<p class="empty">${mine ? 'Ninguno de tus hábitos tiene premios todavía.' : `${esc(nameOf(p))} no tiene hábitos con premios.`}</p>`;
+  }
+  $('#paths-body').innerHTML = html;
 }
 
-function pathHTML(p, pr) {
-  const mine = p === me;
+function pathHTML(h, pr) {
+  const p = h.owner;
   const name = nameOf(p);
   const reachedDays = new Set(pr.reached.map((r) => r.days));
   const N = Math.max(state.settings.milestones.length, pr.next + 1);
@@ -431,27 +434,23 @@ function pathHTML(p, pr) {
   }
 
   const gifts = ms.map((m, i) => {
-    const rec = state.rewards[rewardKey(p, m.days)];
+    const rec = state.rewards[rewardKey(h.id, m.days)];
     const st = rec ? (rec.deliveredAt ? 'delivered' : 'reached') : reachedDays.has(m.days) ? 'reached' : i === pr.next ? 'next' : 'future';
     const size = Math.min(46, 20 + i * 5);
     const status = st === 'delivered' ? ', entregado' : st === 'reached' ? ', por entregar' : '';
-    return `<div class="gift s-${st}" style="left:${pos[i].toFixed(2)}%;--s:${size}px" title="${esc(`${m.name} a los ${daysLabel(m.days)}${status}`)}">
+    return `<div class="gift s-${st}" style="left:${pos[i].toFixed(2)}%;--s:${size}px" title="${esc(`${m.name}, a los ${m.days} días marcados${status}`)}">
       <span class="box"></span><span class="lbl">${esc(shortLabel(m.days))}</span></div>`;
   }).join('');
 
   const nm = milestone(pr.next);
-  let nextText;
-  if (!pr.habits.length) nextText = mine ? 'Agrega un hábito para empezar a avanzar.' : `${esc(name)} todavía no tiene hábitos.`;
-  else if (pr.rate === 0) nextText = 'Ningún hábito tiene la racha activa. Marca uno para volver a avanzar.';
-  else {
-    const days = Math.max(1, Math.ceil((nm.days - pr.points) / pr.rate));
-    nextText = `${days === 1 ? 'Falta 1 día' : `Faltan ${days} días`} para «${esc(nm.name)}», el regalo de ${esc(daysLabel(nm.days))}.`;
-  }
-  const rateText = pr.activeNow > 1 ? `, avanza ×${fmtNum(pr.rate)} por día con ${pr.activeNow} hábitos` : '';
+  const days = Math.max(1, nm.days - pr.points);
+  const nextText = `${days === 1 ? 'Falta 1 día marcado' : `Faltan ${days} días marcados`} para «${esc(nm.name)}», el regalo de ${esc(daysLabel(nm.days))}.`
+    + (pr.tl.alive ? '' : ' La racha está cortada: márcalo para volver a avanzar.');
+  const pts = `${pr.points} ${plural(pr.points, 'día marcado', 'días marcados')}`;
 
   return `<div class="path p-${p}">
-    <div class="path-head"><h3>${esc(name)}</h3><p>${fmtNum(pr.points)} ${pr.points === 1 ? 'día' : 'días'} de progreso${rateText}</p></div>
-    <div class="track" role="img" aria-label="${esc(`${name}: ${fmtNum(pr.points)} días de progreso`)}">
+    <div class="path-head"><h3>${esc(h.emoji || '✨')} ${esc(h.name)}</h3><p>${pts}</p></div>
+    <div class="track" role="img" aria-label="${esc(`${h.name}: ${pts}`)}">
       <div class="rail"><div class="fill" style="width:${mpos.toFixed(2)}%"></div></div>
       ${gifts}
       <div class="you" style="left:${mpos.toFixed(2)}%"><span>${esc(name.trim().charAt(0).toUpperCase() || '?')}</span></div>
@@ -466,6 +465,7 @@ function rulesText(h) {
   if (rest.length) parts.push(`Libres: ${rest.join(', ')}`);
   const m = Number(h.maxMiss) || 0;
   parts.push(m ? `puede saltarse hasta ${m} ${plural(m, 'día seguido', 'días seguidos')}` : 'sin días de margen');
+  if (h.rewards === false) parts.push('sin premios');
   parts.push(`desde el ${fmtDate(h.start)}`);
   const s = parts.join('; ');
   return s.charAt(0).toUpperCase() + s.slice(1) + '.';
@@ -554,7 +554,7 @@ function renderPending() {
   for (const [key, r] of Object.entries(state.rewards)) {
     items.push({
       kind: 'reward', key, to: r.person, from: other(r.person), date: r.earnedAt, delivered: r.deliveredAt, note: r.note,
-      title: `${r.name} (${daysLabel(r.days)})`, detail: r.idea, penalty: false,
+      title: `${r.name} (${daysLabel(r.days)}), por «${r.habitName}»`, detail: r.idea, penalty: false,
     });
   }
   for (const d of state.debts) {
@@ -573,7 +573,7 @@ function renderPending() {
         ${i.detail ? `<p>${esc(i.detail)}</p>` : ''}
         <button class="btn small" data-action="deliver" data-kind="${i.kind}" data-key="${esc(i.key)}">Marcar entregado</button>
       </div>`).join('')
-    : '<p class="empty">Nada pendiente por ahora. El primer regalo llega a los 7 días de racha.</p>';
+    : `<p class="empty">Nada pendiente por ahora. El primer regalo llega a los ${sortedMilestones()[0].days} días marcados.</p>`;
 
   if (done.length) {
     html += `<details class="delivered"><summary>Entregados (${done.length})</summary><ul>${done
@@ -658,6 +658,9 @@ function openHabitForm(id) {
         ${['a', 'b'].map((p) => `<label class="radio"><input type="radio" name="owner" value="${p}" ${owner === p ? 'checked' : ''}><span>${esc(nameOf(p))}</span></label>`).join('')}
       </fieldset>
       <label class="field"><span>Empieza el</span><input type="date" name="start" required max="${t}" value="${esc(h?.start || t)}"></label>
+      ${h
+        ? `<p class="hint">${h.rewards === false ? 'Sin premios.' : 'Con premios.'} Esto se elige al crear el hábito y no se puede cambiar.</p>`
+        : `<label class="radio"><input type="checkbox" name="rewards" checked><span>Este hábito tiene premios<small class="hint" style="margin-top:2px">Si no, igual se sigue la racha y hay castigo al rendirse, pero no hay camino de regalos ni regalo final. No se puede cambiar después.</small></span></label>`}
       <fieldset class="field"><legend>Días libres fijos</legend>
         <div class="chips">${weekdayChips(h?.restDays || [])}</div>
         <small>Esos días no hace falta hacerlo y no cuentan como fallo.</small>
@@ -707,13 +710,16 @@ function openFinish(id) {
   const why = !f.tl.alive
     ? 'Para darlo por logrado, la racha tiene que estar activa.'
     : `Se puede desde los ${f.min} días de racha (vas en ${f.tl.streak}).`;
+  const finalText = h.rewards === false
+    ? 'El hábito ya es parte de tu vida. Como no tiene premios, se cierra sin regalo final.'
+    : `El hábito ya es parte de tu vida. Recibes un último regalo de ${esc(partner)}: «${esc(f.finalTier.name)}», del nivel de tu racha.`;
   openDialog(`
     <h2>Terminar «${esc(h.name)}»</h2>
-    <p class="dlg-lead">Llevas ${f.sinceStart} ${plural(f.sinceStart, 'día', 'días')} con este hábito${f.tl.alive ? ` y una racha de ${f.tl.streak}` : ''}.</p>
+    <p class="dlg-lead">Llevas ${f.sinceStart} ${plural(f.sinceStart, 'día', 'días')} con este hábito${f.tl.alive ? ` y una racha de ${f.tl.streak} ${plural(f.tl.streak, 'día marcado', 'días marcados')}` : ''}.</p>
 
     <div class="choice">
       <h3>Lo logré</h3>
-      <p>El hábito ya es parte de tu vida. Recibes un último regalo de ${esc(partner)}: «${esc(f.finalTier.name)}», del nivel de tu racha.</p>
+      <p>${finalText}</p>
       <button class="btn primary" data-action="finish-done" data-id="${h.id}" ${f.canComplete ? '' : 'disabled'}>Terminar: lo logré</button>
       ${f.canComplete ? '' : `<small class="hint">${esc(why)}</small>`}
     </div>
@@ -750,12 +756,6 @@ function openDeliver(kind, key) {
     </form>`);
 }
 
-function multHelp(bonusPct, max) {
-  const s = { bonusPerExtraHabit: bonusPct / 100, maxMultiplier: max };
-  const m = (n) => Math.min(s.maxMultiplier, 1 + s.bonusPerExtraHabit * (n - 1));
-  return `Con 1 hábito se suma 1 día de progreso por día. Con 2 hábitos, ${fmtNum(m(2))}; con 3, ${fmtNum(m(3))}; con 4, ${fmtNum(m(4))}. Así quien tiene más hábitos recibe regalos un poco antes, pero no el doble ni el triple.`;
-}
-
 function msRow(m = { days: '', name: '', idea: '' }) {
   return `<div class="ms-row">
     <input type="number" name="ms_days" min="1" step="1" required value="${esc(m.days)}" aria-label="Días" placeholder="Días" inputmode="numeric">
@@ -776,20 +776,12 @@ function openSettings() {
         <label class="field"><span>Persona 2</span><input type="text" name="b" required maxlength="24" value="${esc(nameOf('b'))}"></label>
       </div>
 
-      <fieldset class="field"><legend>Regalos según días de progreso</legend>
-        <small>Mientras más lejos, mejor el regalo. Valen para los dos.</small>
+      <fieldset class="field"><legend>Regalos según días marcados</legend>
+        <small>Cada hábito con premios tiene su propio camino. Mientras más lejos, mejor el regalo. Valen para los dos.</small>
         <div id="ms-list">${sortedMilestones().map(msRow).join('')}</div>
         <button class="btn small" type="button" data-action="add-ms" style="margin-top:10px">Agregar regalo</button>
       </fieldset>
       <label class="field"><span>Después del último, repetir cada (días)</span><input type="number" name="repeatEvery" min="1" value="${esc(s.repeatEvery)}"></label>
-
-      <fieldset class="field"><legend>Bono por tener más hábitos</legend>
-        <div class="row">
-          <label class="field" style="margin-top:0"><span>Bono por hábito extra (%)</span><input type="number" name="bonus" min="0" max="100" step="5" value="${Math.round((Number(s.bonusPerExtraHabit) || 0) * 100)}"></label>
-          <label class="field" style="margin-top:0"><span>Tope de ritmo</span><input type="number" name="maxMult" min="1" max="5" step="0.05" value="${esc(s.maxMultiplier)}"></label>
-        </div>
-        <small id="mult-help">${esc(multHelp((Number(s.bonusPerExtraHabit) || 0) * 100, Number(s.maxMultiplier) || 1))}</small>
-      </fieldset>
 
       <label class="field"><span>Días de racha para poder decir «lo logré»</span><input type="number" name="minDays" min="0" value="${esc(s.minDaysToComplete)}"></label>
       <label class="field"><span>Ruleta de castigos (uno por línea)</span><textarea name="punishments">${esc(s.punishments.join('\n'))}</textarea></label>
@@ -808,12 +800,6 @@ function openSettings() {
     </form>`);
 }
 
-dlg.addEventListener('input', (e) => {
-  if (e.target.name === 'bonus' || e.target.name === 'maxMult') {
-    const f = e.target.form;
-    $('#mult-help').textContent = multHelp(Number(f.bonus.value) || 0, Number(f.maxMult.value) || 1);
-  }
-});
 dlg.addEventListener('change', (e) => {
   if (e.target.name === 'quit') $('#spin-area').hidden = e.target.value !== 'spin';
   if (e.target.id === 'import-file') importBackup(e.target.files[0]);
@@ -869,15 +855,17 @@ function finishDone(id) {
     if (!x || x.status !== 'active') return;
     x.status = 'done';
     x.endedAt = t;
-    s.debts.push({
-      id: debtId, kind: 'final', from: other(x.owner), to: x.owner,
-      title: `Regalo final por «${x.name}»: ${f.finalTier.name}`, detail: f.finalTier.idea || '',
-      createdAt: t, deliveredAt: null, note: '',
-    });
+    if (x.rewards !== false) {
+      s.debts.push({
+        id: debtId, kind: 'final', from: other(x.owner), to: x.owner,
+        title: `Regalo final por «${x.name}»: ${f.finalTier.name}`, detail: f.finalTier.idea || '',
+        createdAt: t, deliveredAt: null, note: '',
+      });
+    }
     addLog(s, `${s.people[x.owner].name} logró «${x.name}» después de ${f.tl.streak} días de racha. 🎉`);
   });
   closeDialog();
-  toast('¡Felicitaciones! El regalo final quedó en «Por entregar».');
+  toast(h.rewards === false ? '¡Felicitaciones! Hábito logrado.' : '¡Felicitaciones! El regalo final quedó en «Por entregar».');
 }
 
 function finishQuit(id) {
@@ -1003,7 +991,7 @@ const forms = {
       if (x) {
         Object.assign(x, data);
       } else {
-        s.habits.push({ id: newId, ...data, checks: {}, status: 'active', createdAt: new Date().toISOString() });
+        s.habits.push({ id: newId, ...data, rewards: !!fd.get('rewards'), checks: {}, status: 'active', createdAt: new Date().toISOString() });
         addLog(s, `${s.people[data.owner].name} empezó «${data.name}».`);
       }
     });
@@ -1039,8 +1027,6 @@ const forms = {
     const settings = {
       milestones,
       repeatEvery: Math.max(1, Math.round(Number(fd.get('repeatEvery')) || 365)),
-      bonusPerExtraHabit: Math.max(0, Math.min(1, (Number(fd.get('bonus')) || 0) / 100)),
-      maxMultiplier: Math.max(1, Math.min(5, Number(fd.get('maxMult')) || 1)),
       minDaysToComplete: Math.max(0, Math.round(Number(fd.get('minDays')) || 0)),
       punishments: String(fd.get('punishments') || '').split('\n').map((x) => x.trim()).filter(Boolean),
     };
