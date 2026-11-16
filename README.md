@@ -11,7 +11,7 @@ app.js          toda la lógica: hábitos, rachas, regalos y castigos
 api/state.js    función de Vercel que guarda los datos compartidos (Supabase o Upstash)
 supabase.sql    crea la tabla si usas Supabase
 package.json
-.gitignore
+.gitignore      ignora node_modules, .vercel, .env y respaldos/
 ```
 
 No hay que instalar nada ni compilar nada.
@@ -38,20 +38,22 @@ Cualquiera con el link podría abrirla. Si quieres protegerla, en Vercel ve a **
 
 **Hábitos.** Cada uno agrega los suyos. Solo el dueño puede marcarlos. Se puede marcar hoy y corregir los últimos 7 días tocando los puntitos.
 
-**Flexibilidad.** Cada hábito tiene dos opciones:
-- *Días libres fijos*: por ejemplo sábado y domingo para leer. Esos días no cuentan como fallo.
+**Racha.** Es la cantidad de días que efectivamente marcaste desde que empezó. Si haces el hábito el jueves, el viernes y el lunes (con el fin de semana libre), la racha es de 3. Hoy suma solo cuando lo marcas.
+
+**Flexibilidad.** Cada hábito tiene dos opciones. Ninguna suma días a la racha, pero tampoco la corta:
+- *Días libres fijos*: por ejemplo sábado y domingo para leer. Esos días no cuentan como fallo y además reinician el margen.
 - *Margen*: cuántos días seguidos se puede saltar sin perder la racha. Si te pasas, la racha se corta. El día de hoy nunca corta la racha, porque todavía hay tiempo.
 
-**Regalos.** Cada día con racha activa suma “días de progreso”. Los regalos llegan a los 7 días, 15 días, 1 mes, 3 meses, 6 meses y 1 año (y después cada año). Se pueden cambiar en Ajustes, con su nombre y una idea o presupuesto.
+**Premios.** Al crear un hábito se elige si tiene premios (no se puede cambiar después). Un hábito sin premios sirve para seguir la racha: no tiene camino de regalos ni regalo final, pero sí castigo si te rindes.
 
-**Si uno tiene más hábitos.** No es proporcional. Con 1 hábito se suma 1 día de progreso por día; cada hábito extra agrega un 25 % (con 2 hábitos 1,25; con 3, 1,5) con un tope de 1,75. Así quien tiene más hábitos recibe regalos un poco antes, pero no el triple. El bono y el tope se ajustan en Ajustes.
+**Regalos.** Cada hábito con premios tiene su propio camino: cada día marcado suma un día. Los regalos llegan a los 7 días, 15 días, 1 mes, 3 meses, 6 meses y 1 año marcados (y después cada año). Se pueden cambiar en Ajustes, con su nombre y una idea o presupuesto.
 
-**Perder una racha.** Los regalos ganados no se pierden nunca, pero si se corta la racha de algún hábito, el avance vuelve al último regalo alcanzado.
+**Perder una racha.** Los regalos ganados no se pierden nunca, pero si se corta la racha de un hábito, su camino vuelve al último regalo que alcanzó. Los hábitos abandonados no generan regalos.
 
 **Terminar un hábito.**
-- *Lo logré*: disponible desde los 30 días de racha (ajustable). Recibes un último regalo del nivel de tu racha.
+- *Lo logré*: disponible desde los 30 días de racha (ajustable). Si el hábito tiene premios, recibes un último regalo del nivel de tu racha.
 - *Me rindo*: pagas un castigo a la otra persona. Elige entre hacerle un regalo del nivel del tiempo que llevabas, o girar la ruleta de castigos (editable en Ajustes).
 
 Todo lo pendiente aparece en **Por entregar**, y se marca como entregado cuando se da.
 
-**Respaldo.** En Ajustes puedes descargar un archivo con todos los datos y volver a cargarlo.
+**Respaldo.** En Ajustes puedes descargar un archivo con todos los datos y volver a cargarlo. Los respaldos se pueden guardar en la carpeta `respaldos/`, que no se sube a GitHub.
